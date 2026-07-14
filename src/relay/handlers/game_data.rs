@@ -12,7 +12,7 @@ pub struct GameDataHandler<'a> {
     apps: &'a mut Apps,
 }
 
-impl<'a> PacketSender for GameDataHandler<'a> {
+impl PacketSender for GameDataHandler<'_> {
     fn udp_mut(&mut self) -> &mut PaperInterface {
         self.udp
     }

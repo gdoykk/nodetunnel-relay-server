@@ -136,21 +136,17 @@ impl RelayServer {
 
     /// Delegates packets to various handlers when the client is authenticated, but not in a room.
     async fn handle_authenticated_packet(&mut self, from_client_id: ClientId, client_app_id: AppId, packet: &Packet) {
-        let mut rh = RoomHandler::new(
-            &mut self.udp,
-            &mut self.apps,
-            &mut self.clients,
-        );
-
         match packet {
             Packet::CreateRoom { is_public, metadata } =>
-                rh.create_room(from_client_id, client_app_id, *is_public, metadata).await,
+                RoomHandler::new(&mut self.udp, &mut self.apps, &mut self.clients)
+                    .create_room(from_client_id, client_app_id, *is_public, metadata).await,
             Packet::ReqJoin { room_id, metadata } =>
-                rh.recv_join_req(from_client_id, client_app_id, room_id, metadata).await,
+                RoomHandler::new(&mut self.udp, &mut self.apps, &mut self.clients)
+                    .recv_join_req(from_client_id, client_app_id, room_id, metadata).await,
             Packet::ReqRooms =>
-                rh.send_rooms(from_client_id, client_app_id).await,
+                RoomHandler::new(&mut self.udp, &mut self.apps, &mut self.clients)
+                    .send_rooms(from_client_id, client_app_id).await,
             _ => {
-                drop(rh);
                 self.reject_unexpected_packet(from_client_id, packet, "join or create a room first").await;
             }
         }
@@ -239,7 +235,7 @@ impl RelayServer {
 /// that don't belong to any particular handler.
 struct AdHocSender<'a>(&'a mut PaperInterface);
 
-impl<'a> PacketSender for AdHocSender<'a> {
+impl PacketSender for AdHocSender<'_> {
     fn udp_mut(&mut self) -> &mut PaperInterface {
         self.0
     }

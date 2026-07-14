@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use rand::{rng, Rng};
+use rand::{rng, RngExt};
 use nodetunnel_protocol::{packet::RoomInfo, ClientId};
 use crate::relay::ids::RoomId;
 

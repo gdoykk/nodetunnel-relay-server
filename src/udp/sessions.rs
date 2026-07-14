@@ -29,17 +29,19 @@ impl ConnectionManager {
     /// Returns the `ClientSession` for `addr`, creating one if it doesn't
     /// already exist, and whether the session was newly created.
     pub fn get_or_create(&mut self, addr: SocketAddr) -> (&mut ClientSession, bool) {
-        if let Some(&id) = self.addr_to_id.get(&addr) {
-            // We just looked `id` up from `addr_to_id`, which is always kept
-            // in sync with `id_to_session`, so this entry is guaranteed to
-            // exist. `HashMap::entry` isn't used here because we need to
-            // return a `bool` from a codepath that also creates on miss.
-            if let Some(session) = self.id_to_session.get_mut(&id) {
-                return (session, false);
-            }
-        }
+        let existing_id = self.addr_to_id.get(&addr).copied();
 
-        (self.create_session(addr), true)
+        match existing_id {
+            // We just looked `id` up from `addr_to_id`, which is always
+            // kept in sync with `id_to_session`, so this entry is
+            // guaranteed to exist.
+            Some(id) if self.id_to_session.contains_key(&id) => {
+                (self.id_to_session.get_mut(&id).unwrap_or_else(|| {
+                    unreachable!("just checked id_to_session contains {id}")
+                }), false)
+            }
+            _ => (self.create_session(addr), true),
+        }
     }
 
     pub fn create_session(&mut self, addr: SocketAddr) -> &mut ClientSession {

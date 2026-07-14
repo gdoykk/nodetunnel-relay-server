@@ -1,5 +1,6 @@
 use nodetunnel_protocol::packet::Packet;
 use nodetunnel_protocol::ClientId;
+use std::future::Future;
 use tracing::warn;
 use crate::udp::common::TransferChannel;
 use crate::udp::paper_interface::PaperInterface;
@@ -21,12 +22,12 @@ pub trait PacketSender {
     /// Sends `packet` to `target`. Failures are logged and swallowed: a
     /// send failure to one client must not interrupt handling of the
     /// current event for anyone else.
-    fn send_packet(
-        &mut self,
+    fn send_packet<'a>(
+        &'a mut self,
         target: ClientId,
-        packet: &Packet,
+        packet: &'a Packet,
         channel: TransferChannel,
-    ) -> impl std::future::Future<Output = ()> + Send + '_ {
+    ) -> impl Future<Output = ()> + 'a {
         async move {
             if let Err(e) = self.udp_mut().send(target, packet.to_bytes(), channel).await {
                 warn!("failed to send {:?} to {target}: {e}", packet.kind());
@@ -39,7 +40,7 @@ pub trait PacketSender {
         &mut self,
         target: ClientId,
         msg: &str,
-    ) -> impl std::future::Future<Output = ()> + Send + '_ {
+    ) -> impl Future<Output = ()> + '_ {
         let packet = Packet::Error {
             error_code: ERR_UNAUTHORIZED,
             error_message: msg.to_string(),
@@ -55,7 +56,7 @@ pub trait PacketSender {
     fn force_disconnect(
         &mut self,
         target: ClientId,
-    ) -> impl std::future::Future<Output = ()> + Send + '_ {
+    ) -> impl Future<Output = ()> + '_ {
         async move {
             self.send_packet(target, &Packet::ForceDisconnect, TransferChannel::Reliable).await;
             self.udp_mut().remove_client(target);

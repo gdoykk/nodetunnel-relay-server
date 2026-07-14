@@ -19,7 +19,7 @@ pub struct AuthHandler<'a> {
     config: &'a Config,
 }
 
-impl<'a> PacketSender for AuthHandler<'a> {
+impl PacketSender for AuthHandler<'_> {
     fn udp_mut(&mut self) -> &mut PaperInterface {
         self.udp
     }

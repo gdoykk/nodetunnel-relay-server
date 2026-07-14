@@ -14,7 +14,7 @@ pub struct RoomHandler<'a> {
     clients: &'a mut Clients,
 }
 
-impl<'a> PacketSender for RoomHandler<'a> {
+impl PacketSender for RoomHandler<'_> {
     fn udp_mut(&mut self) -> &mut PaperInterface {
         self.udp
     }

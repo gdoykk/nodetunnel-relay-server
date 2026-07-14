@@ -21,7 +21,7 @@ pub struct DisconnectHandler<'a> {
     apps: &'a mut Apps,
 }
 
-impl<'a> PacketSender for DisconnectHandler<'a> {
+impl PacketSender for DisconnectHandler<'_> {
     fn udp_mut(&mut self) -> &mut PaperInterface {
         self.udp
     }
@@ -101,10 +101,9 @@ impl<'a> DisconnectHandler<'a> {
 
     async fn handle_peer_disconnect(&mut self, app_id: AppId, room_id: RoomId, client_id: ClientId, peer_godot_id: i32, other_peers: Vec<ClientId>) {
         info!("peer disconnected");
-        if let Some(app) = self.apps.get_mut(app_id) {
-            if let Some(room) = app.rooms.get_mut(room_id) {
-                room.remove_peer(client_id);
-            }
+        if let Some(app) = self.apps.get_mut(app_id)
+            && let Some(room) = app.rooms.get_mut(room_id) {
+            room.remove_peer(client_id);
         }
 
         for peer_id in other_peers {
