@@ -1,3 +1,5 @@
+use nodetunnel_protocol::ClientId;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferChannel {
     Reliable,
@@ -6,7 +8,7 @@ pub enum TransferChannel {
 
 #[derive(Debug, Clone)]
 pub enum ServerEvent {
-    ClientConnected { client_id: u64 },
-    ClientDisconnected { client_id: u64 },
-    PacketReceived { client_id: u64, data: Vec<u8>, channel: TransferChannel },
+    ClientConnected { client_id: ClientId },
+    ClientDisconnected { client_id: ClientId },
+    PacketReceived { client_id: ClientId, data: Vec<u8>, channel: TransferChannel },
 }

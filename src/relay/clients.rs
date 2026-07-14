@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use nodetunnel_protocol::ClientId;
+use crate::relay::ids::{AppId, RoomId};
 
 /// An enum to store different states that a client can be in.
 /// Defaults to `Connected`
@@ -6,8 +8,8 @@ use std::collections::HashMap;
 pub enum ClientState {
     #[default]
     Connected,
-    Authenticated { app_id: u64 },
-    InRoom { app_id: u64, room_id: u64 }
+    Authenticated { app_id: AppId },
+    InRoom { app_id: AppId, room_id: RoomId }
 }
 
 /// Stores data about a client.
@@ -27,7 +29,7 @@ impl Client {
 /// Provides methods to create, remove, and fetch clients.
 #[derive(Default)]
 pub struct Clients {
-    by_id: HashMap<u64, Client>,
+    by_id: HashMap<ClientId, Client>,
 }
 
 impl Clients {
@@ -36,23 +38,23 @@ impl Clients {
     }
 
     /// Creates a new client with the given ID.
-    pub fn create(&mut self, id: u64) {
+    pub fn create(&mut self, id: ClientId) {
         self.by_id.insert(id, Client::new());
     }
 
     /// Removes a client with the given ID.
     /// Returns the removed client (if it existed).
-    pub fn remove(&mut self, id: u64) -> Option<Client> {
+    pub fn remove(&mut self, id: ClientId) -> Option<Client> {
         self.by_id.remove(&id)
     }
 
     /// Gets a reference to a client by ID.
-    pub fn get(&self, id: u64) -> Option<&Client> {
+    pub fn get(&self, id: ClientId) -> Option<&Client> {
         self.by_id.get(&id)
     }
 
     /// Gets a mutable reference to a client by ID.
-    pub fn get_mut(&mut self, id: u64) -> Option<&mut Client> {
+    pub fn get_mut(&mut self, id: ClientId) -> Option<&mut Client> {
         self.by_id.get_mut(&id)
     }
 }

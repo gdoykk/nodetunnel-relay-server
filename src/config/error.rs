@@ -10,4 +10,7 @@ pub enum ConfigError {
 
     #[error("Config file could not be parsed: {0}")]
     ParseError(#[from] toml::de::Error),
+
+    #[error("Environment configuration could not be parsed: {0}")]
+    EnvError(#[from] envy::Error),
 }

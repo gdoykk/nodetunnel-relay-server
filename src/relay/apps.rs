@@ -1,26 +1,27 @@
 use std::collections::HashMap;
+use crate::relay::ids::AppId;
 use crate::relay::rooms::Rooms;
 
 pub struct App {
-    pub id: u64,
+    pub id: AppId,
     pub token: String,
     pub rooms: Rooms,
 }
 
 impl App {
-    pub fn new(id: u64, token: String) -> Self {
+    pub fn new(id: AppId, token: String) -> Self {
         Self {
             id,
             token,
-            rooms: Rooms::new()
+            rooms: Rooms::new(),
         }
     }
 }
 
 #[derive(Default)]
 pub struct Apps {
-    by_id: HashMap<u64, App>,
-    token_to_id: HashMap<String, u64>,
+    by_id: HashMap<AppId, App>,
+    token_to_id: HashMap<String, AppId>,
     next_id: u64,
 }
 
@@ -29,8 +30,8 @@ impl Apps {
         Self::default()
     }
 
-    pub fn create(&mut self, token: String) -> u64 {
-        let app_id = self.next_id;
+    pub fn create(&mut self, token: String) -> AppId {
+        let app_id = AppId::new(self.next_id);
         self.next_id += 1;
 
         let app = App::new(app_id, token.clone());
@@ -39,12 +40,12 @@ impl Apps {
 
         app_id
     }
-    
+
     pub fn iter(&self) -> impl Iterator<Item = &App> {
         self.by_id.values()
     }
 
-    pub fn get_mut(&mut self, id: u64) -> Option<&mut App> {
+    pub fn get_mut(&mut self, id: AppId) -> Option<&mut App> {
         self.by_id.get_mut(&id)
     }
 

@@ -1,16 +1,28 @@
 use std::error::Error;
 use std::time::Duration;
+use nodetunnel_protocol::packet::Packet;
+use nodetunnel_protocol::ClientId;
 use tracing::{debug, info, warn};
 use crate::config::loader::Config;
-use crate::protocol::packet::Packet;
 use crate::relay::apps::Apps;
 use crate::relay::clients::{ClientState, Clients};
 use crate::relay::handlers::auth::AuthHandler;
 use crate::relay::handlers::disconnect::DisconnectHandler;
 use crate::relay::handlers::game_data::GameDataHandler;
 use crate::relay::handlers::room::RoomHandler;
+use crate::relay::handlers::sender::PacketSender;
+use crate::relay::ids::{AppId, RoomId};
 use crate::udp::common::{TransferChannel, ServerEvent};
 use crate::udp::paper_interface::PaperInterface;
+
+/// How often expired UDP sessions are swept.
+const SESSION_CLEANUP_INTERVAL: Duration = Duration::from_secs(1);
+/// A session is considered expired after this long without any traffic.
+const SESSION_TIMEOUT: Duration = Duration::from_secs(5);
+/// How often unacknowledged reliable packets are checked for resend.
+const RESEND_CHECK_INTERVAL: Duration = Duration::from_millis(50);
+/// How long to wait for an ack before resending a reliable packet.
+const RESEND_AFTER: Duration = Duration::from_millis(100);
 
 pub struct RelayServer {
     udp: PaperInterface,
@@ -34,10 +46,8 @@ impl RelayServer {
 
     /// Starts the server loop.
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
-        // TODO: remove magic numbers
-        let mut cleanup = tokio::time::interval(Duration::from_secs(1));
-        // TODO: remove magic numbers
-        let mut resend  = tokio::time::interval(Duration::from_millis(50));
+        let mut cleanup = tokio::time::interval(SESSION_CLEANUP_INTERVAL);
+        let mut resend = tokio::time::interval(RESEND_CHECK_INTERVAL);
 
         cleanup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         resend.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -52,15 +62,13 @@ impl RelayServer {
                 }
 
                 _ = cleanup.tick() => {
-                    // TODO: remove magic numbers
-                    for client_id in self.udp.connection_manager.cleanup_sessions(Duration::from_secs(5)) {
+                    for client_id in self.udp.connection_manager.cleanup_sessions(SESSION_TIMEOUT) {
                         self.handle_event(ServerEvent::ClientDisconnected { client_id }).await;
                     }
                 }
 
                 _ = resend.tick() => {
-                    // TODO: remove magic numbers
-                    self.udp.do_resends(Duration::from_millis(100)).await;
+                    self.udp.do_resends(RESEND_AFTER).await;
                 }
             }
         }
@@ -88,7 +96,7 @@ impl RelayServer {
 
     /// Handles a packet received from `PaperUDP`.
     /// This checks the state of the client and routes packets based on the state.
-    async fn handle_packet(&mut self, from_client_id: u64, data: Vec<u8>, channel: TransferChannel) {
+    async fn handle_packet(&mut self, from_client_id: ClientId, data: Vec<u8>, channel: TransferChannel) {
         let Some(client) = self.clients.get(from_client_id) else {
             // This means that the client is not in the list of connected clients.
             // Likely a bug in the client or a malicious client.
@@ -97,7 +105,7 @@ impl RelayServer {
         };
 
         let Ok(packet) = Packet::from_bytes(&data) else {
-            warn!("received an invalid packet from {}", from_client_id);
+            warn!("received an invalid packet from {from_client_id}");
             return;
         };
 
@@ -109,7 +117,7 @@ impl RelayServer {
     }
 
     /// Delegates packets to various handlers when the client has yet to authenticate.
-    async fn handle_unauthenticated_packet(&mut self, from_client_id: u64, packet: &Packet) {
+    async fn handle_unauthenticated_packet(&mut self, from_client_id: ClientId, packet: &Packet) {
         match packet {
             Packet::Authenticate { app_id, version } => {
                 AuthHandler::new(
@@ -121,14 +129,13 @@ impl RelayServer {
                 ).authenticate_client(from_client_id, app_id, version).await;
             }
             _ => {
-                // TODO: should probably alert the client that they need to authenticate first!
-                warn!("unexpected packet type from {} in un-authenticated state: {:?}.", from_client_id, packet);
+                self.reject_unexpected_packet(from_client_id, packet, "authenticate first").await;
             }
         }
     }
 
     /// Delegates packets to various handlers when the client is authenticated, but not in a room.
-    async fn handle_authenticated_packet(&mut self, from_client_id: u64, client_app_id: u64, packet: &Packet) {
+    async fn handle_authenticated_packet(&mut self, from_client_id: ClientId, client_app_id: AppId, packet: &Packet) {
         let mut rh = RoomHandler::new(
             &mut self.udp,
             &mut self.apps,
@@ -143,14 +150,14 @@ impl RelayServer {
             Packet::ReqRooms =>
                 rh.send_rooms(from_client_id, client_app_id).await,
             _ => {
-                // TODO: should probably alert the client that they are in an unexpected state?
-                warn!("unexpected packet type from {} in authenticated state: {:?}.", from_client_id, packet);
+                drop(rh);
+                self.reject_unexpected_packet(from_client_id, packet, "join or create a room first").await;
             }
         }
     }
 
     /// Delegates packets to various handlers when the client is in a room.
-    async fn handle_in_room_packet(&mut self, from_client_id: u64, client_app_id: u64, client_room_id: u64, packet: &Packet, channel: &TransferChannel) {
+    async fn handle_in_room_packet(&mut self, from_client_id: ClientId, client_app_id: AppId, client_room_id: RoomId, packet: &Packet, channel: &TransferChannel) {
         match packet {
             Packet::UpdateRoom { metadata, room_id: _room_id } => {
                 RoomHandler::new(
@@ -164,7 +171,7 @@ impl RelayServer {
                     &mut self.udp,
                     &mut self.apps,
                     &mut self.clients,
-                ).recv_join_res(client_app_id, *target_id, client_room_id, allowed).await,
+                ).recv_join_res(client_app_id, *target_id, client_room_id, *allowed).await,
             Packet::GameData { from_peer, data } => {
                 GameDataHandler::new(
                     &mut self.udp,
@@ -172,17 +179,29 @@ impl RelayServer {
                 ).route_game_data(from_client_id, client_app_id, client_room_id, *from_peer, data, channel).await;
             }
             _ => {
-                // TODO: should probably alert the client that they are in an unexpected state?
-                warn!("unexpected packet type from {} in room state: {:?}.", from_client_id, packet);
+                self.reject_unexpected_packet(from_client_id, packet, "an unexpected state").await;
             }
         }
+    }
+
+    /// Logs and notifies a client that sent a packet type that isn't valid
+    /// for their current connection state, instead of silently dropping it.
+    async fn reject_unexpected_packet(&mut self, from_client_id: ClientId, packet: &Packet, hint: &str) {
+        warn!(
+            "unexpected packet {:?} from {from_client_id} ({hint})",
+            packet.kind()
+        );
+
+        AdHocSender(&mut self.udp)
+            .send_err(from_client_id, &format!("Unexpected packet for current state; {hint}."))
+            .await;
     }
 
     /// Forcefully disconnects all clients from the server.
     /// Should be called when the server shuts down.
     pub async fn cleanup(&mut self) {
-        let mut disconnects: Vec<u64> = Vec::new();
-        let mut to_remove: Vec<(u64, u64)> = Vec::new();
+        let mut disconnects: Vec<ClientId> = Vec::new();
+        let mut to_remove: Vec<(AppId, RoomId)> = Vec::new();
 
         for app in self.apps.iter() {
             for room in app.rooms.iter() {
@@ -212,5 +231,16 @@ impl RelayServer {
         for (app_id, room_id) in to_remove {
             rh.remove_room(app_id, room_id);
         }
+    }
+}
+
+/// Minimal `PacketSender` over a bare `&mut PaperInterface`, used for
+/// one-off error replies (e.g. "unexpected packet for your current state")
+/// that don't belong to any particular handler.
+struct AdHocSender<'a>(&'a mut PaperInterface);
+
+impl<'a> PacketSender for AdHocSender<'a> {
+    fn udp_mut(&mut self) -> &mut PaperInterface {
+        self.0
     }
 }

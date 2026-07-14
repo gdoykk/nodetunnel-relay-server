@@ -14,7 +14,6 @@ use crate::udp::paper_interface::PaperInterface;
 
 mod config;
 mod udp;
-mod protocol;
 mod relay;
 
 #[tokio::main]

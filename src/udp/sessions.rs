@@ -1,18 +1,19 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
+use nodetunnel_protocol::ClientId;
 use paperudp::channel::Channel;
 
 pub struct ClientSession {
-    pub id: u64,
+    pub id: ClientId,
     pub addr: SocketAddr,
     pub channel: Channel,
     pub last_heard_from: Instant,
 }
 
 pub struct ConnectionManager {
-    id_to_session: HashMap<u64, ClientSession>,
-    addr_to_id: HashMap<SocketAddr, u64>,
+    id_to_session: HashMap<ClientId, ClientSession>,
+    addr_to_id: HashMap<SocketAddr, ClientId>,
     next_client_id: u64,
 }
 
@@ -21,25 +22,28 @@ impl ConnectionManager {
         Self {
             id_to_session: HashMap::new(),
             addr_to_id: HashMap::new(),
-            next_client_id: 1
+            next_client_id: 1,
         }
     }
 
-    /// Returns a ClientSession and a bool.
-    /// If the session already existed, the bool will be false.
-    /// If it had to be created, it will return true.
+    /// Returns the `ClientSession` for `addr`, creating one if it doesn't
+    /// already exist, and whether the session was newly created.
     pub fn get_or_create(&mut self, addr: SocketAddr) -> (&mut ClientSession, bool) {
-        if let Some(id) = self.addr_to_id.get(&addr) {
-            // TODO: get rid of expect
-            let s = self.id_to_session.get_mut(id).expect("session exists in both maps");
-            return (s, false);
+        if let Some(&id) = self.addr_to_id.get(&addr) {
+            // We just looked `id` up from `addr_to_id`, which is always kept
+            // in sync with `id_to_session`, so this entry is guaranteed to
+            // exist. `HashMap::entry` isn't used here because we need to
+            // return a `bool` from a codepath that also creates on miss.
+            if let Some(session) = self.id_to_session.get_mut(&id) {
+                return (session, false);
+            }
         }
 
         (self.create_session(addr), true)
     }
 
     pub fn create_session(&mut self, addr: SocketAddr) -> &mut ClientSession {
-        let id = self.next_client_id;
+        let id = ClientId::new(self.next_client_id);
         self.next_client_id += 1;
 
         let session = ClientSession {
@@ -52,17 +56,17 @@ impl ConnectionManager {
         self.id_to_session.insert(id, session);
         self.addr_to_id.insert(addr, id);
 
-        self.id_to_session.get_mut(&id).expect("session exists")
+        // Safe to index directly: we just inserted this key above.
+        self.id_to_session
+            .get_mut(&id)
+            .unwrap_or_else(|| unreachable!("session was just inserted under id {id}"))
     }
 
-    pub fn get_by_id(&mut self, id: &u64) -> Option<&mut ClientSession> {
-        self.id_to_session.get_mut(id)
+    pub fn get_by_id(&mut self, id: ClientId) -> Option<&mut ClientSession> {
+        self.id_to_session.get_mut(&id)
     }
 
-    pub fn get_resends(
-        &mut self,
-        interval: Duration,
-    ) -> Vec<(SocketAddr, Vec<u8>)> {
+    pub fn get_resends(&mut self, interval: Duration) -> Vec<(SocketAddr, Vec<u8>)> {
         let mut out = Vec::new();
 
         for session in self.id_to_session.values_mut() {
@@ -76,7 +80,7 @@ impl ConnectionManager {
         out
     }
 
-    pub fn cleanup_sessions(&mut self, timeout: Duration) -> Vec<u64> {
+    pub fn cleanup_sessions(&mut self, timeout: Duration) -> Vec<ClientId> {
         let now = Instant::now();
         let mut expired = Vec::new();
 
@@ -86,8 +90,8 @@ impl ConnectionManager {
             }
         }
 
-        for id in &expired {
-            if let Some(session) = self.id_to_session.remove(id) {
+        for &id in &expired {
+            if let Some(session) = self.id_to_session.remove(&id) {
                 self.addr_to_id.remove(&session.addr);
             }
         }
@@ -95,8 +99,8 @@ impl ConnectionManager {
         expired
     }
 
-    pub fn remove_session(&mut self, id: &u64) {
-        if let Some(session) = self.id_to_session.remove(id) {
+    pub fn remove_session(&mut self, id: ClientId) {
+        if let Some(session) = self.id_to_session.remove(&id) {
             self.addr_to_id.remove(&session.addr);
         }
     }

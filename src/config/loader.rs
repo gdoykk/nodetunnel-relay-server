@@ -3,6 +3,21 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use crate::config::error::ConfigError;
 
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WhitelistFailurePolicy {
+    /// If the remote whitelist endpoint cannot be reached (network error,
+    /// timeout, unexpected status code), reject the connecting client. This
+    /// is the safer default for a whitelist that exists to keep unknown
+    /// apps off the relay.
+    #[default]
+    FailClosed,
+    /// If the remote whitelist endpoint cannot be reached, fall back to the
+    /// local `whitelist` config value. Only use this if availability matters
+    /// more than strict enforcement of the remote list.
+    FailOpenToLocal,
+}
+
 #[derive(Deserialize, Debug)]
 pub struct Config {
     #[serde(default = "defaults::udp_bind_address")]
@@ -20,10 +35,23 @@ pub struct Config {
     #[serde(default = "defaults::empty_string")]
     pub remote_whitelist_token: String,
 
+    #[serde(default)]
+    pub whitelist_failure_policy: WhitelistFailurePolicy,
+
     #[serde(default = "defaults::empty_string")]
     pub relay_id: String,
 }
 
+/// Loads config from `config.toml` if present, otherwise from environment
+/// variables (optionally via a `.env` file).
+///
+/// Unlike a previous version of this function, a malformed/partial
+/// environment configuration is a hard error rather than being silently
+/// replaced with hardcoded defaults. Silently falling back on parse
+/// failure is dangerous for a relay: an operator who mistypes
+/// `WHITELIST` or `ALLOWED_VERSIONS` would otherwise get a relay that
+/// silently starts with an empty whitelist (i.e. allows every app) instead
+/// of failing to start.
 pub fn load_config(path: &str) -> Result<Config, ConfigError> {
     let config_path = PathBuf::from(path);
 
@@ -32,18 +60,7 @@ pub fn load_config(path: &str) -> Result<Config, ConfigError> {
         return Ok(toml::from_str(&config_str)?);
     }
 
-    // Fallback to environment variables
-    match envy::from_env::<Config>() {
-        Ok(cfg) => Ok(cfg),
-        Err(_) => Ok(Config {
-            udp_bind_address: defaults::udp_bind_address(),
-            whitelist: defaults::whitelist(),
-            allowed_versions: defaults::allowed_versions(),
-            remote_whitelist_endpoint: defaults::empty_string(),
-            remote_whitelist_token: defaults::empty_string(),
-            relay_id: defaults::empty_string(),
-        }),
-    }
+    Ok(envy::from_env::<Config>()?)
 }
 
 mod defaults {

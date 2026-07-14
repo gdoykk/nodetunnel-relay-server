@@ -1,10 +1,12 @@
 use std::error::Error;
 use reqwest::StatusCode;
+use nodetunnel_protocol::ClientId;
 use tracing::warn;
-use crate::config::loader::Config;
-use crate::protocol::packet::Packet;
+use crate::config::loader::{Config, WhitelistFailurePolicy};
+use nodetunnel_protocol::packet::Packet;
 use crate::relay::apps::Apps;
 use crate::relay::clients::{ClientState, Clients};
+use crate::relay::handlers::sender::PacketSender;
 use crate::udp::common::TransferChannel;
 use crate::udp::paper_interface::PaperInterface;
 
@@ -15,6 +17,12 @@ pub struct AuthHandler<'a> {
     clients: &'a mut Clients,
     apps: &'a mut Apps,
     config: &'a Config,
+}
+
+impl<'a> PacketSender for AuthHandler<'a> {
+    fn udp_mut(&mut self) -> &mut PaperInterface {
+        self.udp
+    }
 }
 
 impl<'a> AuthHandler<'a> {
@@ -33,7 +41,7 @@ impl<'a> AuthHandler<'a> {
         }
     }
 
-    pub async fn authenticate_client(&mut self, sender_id: u64, app_token: &str, version: &str) {
+    pub async fn authenticate_client(&mut self, sender_id: ClientId, app_token: &str, version: &str) {
         // Check version
         if !self.is_version_allowed(version) {
             let msg = format!("Version {version} is not allowed.");
@@ -51,7 +59,7 @@ impl<'a> AuthHandler<'a> {
         }
 
         let Some(client) = self.clients.get_mut(sender_id) else {
-            warn!("attempted to authenticate a missing client {}", sender_id);
+            warn!("attempted to authenticate a missing client {sender_id}");
             return;
         };
 
@@ -61,12 +69,12 @@ impl<'a> AuthHandler<'a> {
         };
 
         client.state = ClientState::Authenticated { app_id };
-        self.send_packet(sender_id, &Packet::ClientAuthenticated, TransferChannel::Reliable, ).await;
+        self.send_packet(sender_id, &Packet::ClientAuthenticated, TransferChannel::Reliable).await;
     }
 
     fn is_version_allowed(&self, version: &str) -> bool {
         let versions = &self.config.allowed_versions;
-        versions.contains(&version.to_string())
+        versions.iter().any(|v| v == version)
     }
 
     async fn app_allowed(&mut self, app: &str) -> bool {
@@ -74,15 +82,21 @@ impl<'a> AuthHandler<'a> {
         let token = &self.config.remote_whitelist_token;
 
         if remote.is_empty() || token.is_empty() {
-            self.check_local_whitelist(app)
-        } else {
-            match self.check_remote_whitelist(remote, app, token).await {
-                Ok(res) => res,
-                Err(e) => {
-                    warn!("failed to check remote whitelist, defaulting to local: {}", e);
+            return self.check_local_whitelist(app);
+        }
+
+        match self.check_remote_whitelist(remote, app, token).await {
+            Ok(res) => res,
+            Err(e) => match self.config.whitelist_failure_policy {
+                WhitelistFailurePolicy::FailClosed => {
+                    warn!("remote whitelist check failed, rejecting (fail_closed policy): {e}");
+                    false
+                }
+                WhitelistFailurePolicy::FailOpenToLocal => {
+                    warn!("remote whitelist check failed, falling back to local whitelist (fail_open_to_local policy): {e}");
                     self.check_local_whitelist(app)
                 }
-            }
+            },
         }
     }
 
@@ -92,7 +106,7 @@ impl<'a> AuthHandler<'a> {
         if whitelist.is_empty() {
             true
         } else {
-            whitelist.contains(&app.to_string())
+            whitelist.iter().any(|w| w == app)
         }
     }
 
@@ -115,29 +129,5 @@ impl<'a> AuthHandler<'a> {
             StatusCode::NOT_FOUND => Ok(false),
             s => Err(format!("unexpected status from endpoint: {s}").into()),
         }
-    }
-
-    async fn send_packet(&mut self, target: u64, packet: &Packet, channel: TransferChannel) {
-        if let Err(e) = self.udp.send(target, packet.to_bytes(), channel).await {
-            warn!("failed to send packet: {}", e);
-        }
-    }
-
-    async fn send_err(&mut self, target: u64, msg: &str) {
-        self.send_packet(
-            target,
-            &Packet::Error {
-                error_code: 401,
-                error_message: msg.to_string(),
-            },
-            TransferChannel::Reliable,
-        )
-            .await;
-    }
-
-    async fn force_disconnect(&mut self, target: u64) {
-        self.send_packet(target, &Packet::ForceDisconnect, TransferChannel::Reliable)
-            .await;
-        self.udp.remove_client(&target);
     }
 }

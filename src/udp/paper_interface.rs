@@ -1,6 +1,7 @@
 use tokio::net::UdpSocket;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
+use nodetunnel_protocol::ClientId;
 use paperudp::channel::DecodeResult;
 use paperudp::packet::PacketType;
 use tracing::{debug, warn};
@@ -16,8 +17,7 @@ pub struct PaperInterface {
 
 impl PaperInterface {
     pub async fn new(addr: SocketAddr) -> Result<Self, UdpError> {
-        let socket = UdpSocket::bind(addr).await
-            .map_err(|e| UdpError::BindError(e))?;
+        let socket = UdpSocket::bind(addr).await.map_err(UdpError::BindError)?;
 
         Ok(Self {
             socket,
@@ -43,7 +43,7 @@ impl PaperInterface {
                             if is_new {
                                 self.pending_events.push(ServerEvent::ClientConnected {
                                     client_id: session.id
-                                })
+                                });
                             }
 
                             session.last_heard_from = Instant::now();
@@ -80,7 +80,7 @@ impl PaperInterface {
                             DecodeResult::Ack { .. } => {}
                             DecodeResult::None => {
                                 debug!("unknown packet: {:?}", &buf[..len]);
-                                self.remove_client(&session_id);
+                                self.remove_client(session_id);
                             }
                         }
                     }
@@ -103,21 +103,15 @@ impl PaperInterface {
         }
     }
 
-    pub async fn send(&mut self, target: u64, data: Vec<u8>, channel: TransferChannel) -> Result<(), std::io::Error> {
-        if let Some(session) = self.connection_manager.get_by_id(&target) {
+    pub async fn send(&mut self, target: ClientId, data: Vec<u8>, channel: TransferChannel) -> Result<(), std::io::Error> {
+        if let Some(session) = self.connection_manager.get_by_id(target) {
             match channel {
                 TransferChannel::Reliable => {
-                    let pkt = session.channel.encode(
-                        &*data,
-                        PacketType::ReliableOrdered
-                    );
+                    let pkt = session.channel.encode(&*data, PacketType::ReliableOrdered);
                     self.socket.send_to(&pkt, session.addr).await?;
                 }
                 TransferChannel::Unreliable => {
-                    let pkt = session.channel.encode(
-                        &data,
-                        PacketType::Unreliable
-                    );
+                    let pkt = session.channel.encode(&data, PacketType::Unreliable);
                     self.socket.send_to(&pkt, session.addr).await?;
                 }
             }
@@ -134,7 +128,7 @@ impl PaperInterface {
         }
     }
 
-    pub fn remove_client(&mut self, id: &u64) {
+    pub fn remove_client(&mut self, id: ClientId) {
         self.connection_manager.remove_session(id);
     }
 }

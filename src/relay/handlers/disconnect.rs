@@ -1,21 +1,30 @@
 use tracing::{info, warn};
-use crate::protocol::packet::Packet;
+use nodetunnel_protocol::packet::Packet;
+use nodetunnel_protocol::ClientId;
 use crate::relay::apps::Apps;
 use crate::relay::clients::{ClientState, Clients};
 use crate::relay::handlers::room::RoomHandler;
+use crate::relay::handlers::sender::PacketSender;
+use crate::relay::ids::{AppId, RoomId};
 use crate::udp::common::TransferChannel;
 use crate::udp::paper_interface::PaperInterface;
 
 struct DisconnectInfo {
     is_host: bool,
     godot_id: i32,
-    other_peers: Vec<u64>,
+    other_peers: Vec<ClientId>,
 }
 
 pub struct DisconnectHandler<'a> {
     udp: &'a mut PaperInterface,
     clients: &'a mut Clients,
     apps: &'a mut Apps,
+}
+
+impl<'a> PacketSender for DisconnectHandler<'a> {
+    fn udp_mut(&mut self) -> &mut PaperInterface {
+        self.udp
+    }
 }
 
 impl<'a> DisconnectHandler<'a> {
@@ -31,7 +40,7 @@ impl<'a> DisconnectHandler<'a> {
         }
     }
 
-    pub async fn handle_disconnect(&mut self, client_id: u64) {
+    pub async fn handle_disconnect(&mut self, client_id: ClientId) {
         let Some(client) = self.clients.remove(client_id) else {
             warn!("unregistered client disconnected");
             return;
@@ -42,20 +51,20 @@ impl<'a> DisconnectHandler<'a> {
         }
     }
 
-    async fn handle_room_disconnect(&mut self, sender_id: u64, app_id: u64, room_id: u64) {
+    async fn handle_room_disconnect(&mut self, sender_id: ClientId, app_id: AppId, room_id: RoomId) {
         let disconnect_info = {
             let Some(app) = self.apps.get_mut(app_id) else {
-                warn!("{} had invalid app_id on disconnect", sender_id);
+                warn!("{sender_id} had invalid app_id on disconnect");
                 return;
             };
 
             let Some(room) = app.rooms.get(room_id) else {
-                warn!("{} had invalid room_id on disconnect", sender_id);
+                warn!("{sender_id} had invalid room_id on disconnect");
                 return;
             };
 
             let Some(godot_id) = room.client_to_gd(sender_id) else {
-                warn!("{} not found in their room on disconnect", sender_id);
+                warn!("{sender_id} not found in their room on disconnect");
                 return;
             };
 
@@ -76,7 +85,7 @@ impl<'a> DisconnectHandler<'a> {
         }
     }
 
-    async fn handle_host_disconnect(&mut self, app_id: u64, room_id: u64, peers_to_kick: Vec<u64>) {
+    async fn handle_host_disconnect(&mut self, app_id: AppId, room_id: RoomId, peers_to_kick: Vec<ClientId>) {
         info!("host disconnected");
         RoomHandler::new(
             self.udp,
@@ -90,7 +99,7 @@ impl<'a> DisconnectHandler<'a> {
         }
     }
 
-    async fn handle_peer_disconnect(&mut self, app_id: u64, room_id: u64, client_id: u64, peer_godot_id: i32, other_peers: Vec<u64>) {
+    async fn handle_peer_disconnect(&mut self, app_id: AppId, room_id: RoomId, client_id: ClientId, peer_godot_id: i32, other_peers: Vec<ClientId>) {
         info!("peer disconnected");
         if let Some(app) = self.apps.get_mut(app_id) {
             if let Some(room) = app.rooms.get_mut(room_id) {
@@ -100,26 +109,6 @@ impl<'a> DisconnectHandler<'a> {
 
         for peer_id in other_peers {
             self.send_packet(peer_id, &Packet::PeerLeftRoom { peer_id: peer_godot_id }, TransferChannel::Reliable).await;
-        }
-    }
-
-    pub async fn force_disconnect(&mut self, target_client: u64) {
-        self.send_packet(
-            target_client,
-            &Packet::ForceDisconnect,
-            TransferChannel::Reliable
-        ).await;
-        self.udp.remove_client(&target_client);
-    }
-
-    async fn send_packet(&mut self, target_client: u64, packet: &Packet, channel: TransferChannel) {
-        match self.udp.send(
-            target_client,
-            packet.to_bytes(),
-            channel,
-        ).await {
-            Ok(()) => {},
-            Err(e) => warn!("failed to send packet: {}", e)
         }
     }
 }

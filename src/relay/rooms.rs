@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use rand::{rng, Rng};
-use crate::protocol::packet::RoomInfo;
+use nodetunnel_protocol::{packet::RoomInfo, ClientId};
+use crate::relay::ids::RoomId;
 
 const ID_CHARS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ123456789";
 const ID_LENGTH: usize = 5;
@@ -38,18 +39,18 @@ impl RoomIds {
 
 #[derive(Debug)]
 pub struct Room {
-    pub id: u64,
+    pub id: RoomId,
     pub join_code: String,
     pub is_public: bool,
     pub metadata: String,
-    host_id: u64,
-    client_to_godot: HashMap<u64, i32>,
-    godot_to_client: HashMap<i32, u64>,
+    host_id: ClientId,
+    client_to_godot: HashMap<ClientId, i32>,
+    godot_to_client: HashMap<i32, ClientId>,
     next_godot_id: i32,
 }
 
 impl Room {
-    pub fn new(id: u64, join_code: String, host_id: u64, is_public: bool, metadata: String) -> Self {
+    pub fn new(id: RoomId, join_code: String, host_id: ClientId, is_public: bool, metadata: String) -> Self {
         Self {
             id,
             join_code,
@@ -69,7 +70,7 @@ impl Room {
         }
     }
 
-    pub fn add_peer(&mut self, client_id: u64) -> i32 {
+    pub fn add_peer(&mut self, client_id: ClientId) -> i32 {
         let godot_pid = self.next_godot_id;
         self.client_to_godot.insert(client_id, godot_pid);
         self.godot_to_client.insert(godot_pid, client_id);
@@ -78,24 +79,24 @@ impl Room {
         godot_pid
     }
 
-    pub fn get_clients(&self) -> Vec<u64> {
+    pub fn get_clients(&self) -> Vec<ClientId> {
         self.client_to_godot.keys().copied().collect()
     }
 
-    pub fn client_to_gd(&self, client_id: u64) -> Option<i32> {
+    pub fn client_to_gd(&self, client_id: ClientId) -> Option<i32> {
         self.client_to_godot.get(&client_id).copied()
     }
 
-    pub fn gd_to_client(&self, godot_id: i32) -> Option<u64> {
+    pub fn gd_to_client(&self, godot_id: i32) -> Option<ClientId> {
         self.godot_to_client.get(&godot_id).copied()
     }
 
-    pub fn get_host(&self) -> u64 {
+    pub fn get_host(&self) -> ClientId {
         self.host_id
     }
 
-    pub fn remove_peer(&mut self, renet_id: u64) {
-        let Some(peer_id) = self.client_to_godot.remove(&renet_id) else {
+    pub fn remove_peer(&mut self, client_id: ClientId) {
+        let Some(peer_id) = self.client_to_godot.remove(&client_id) else {
             return;
         };
 
@@ -105,8 +106,8 @@ impl Room {
 
 #[derive(Default)]
 pub struct Rooms {
-    by_id: HashMap<u64, Room>,
-    jc_to_id: HashMap<String, u64>,
+    by_id: HashMap<RoomId, Room>,
+    jc_to_id: HashMap<String, RoomId>,
     next_id: u64,
     join_codes: RoomIds,
 }
@@ -118,14 +119,19 @@ impl Rooms {
 
     /// Creates a new room based on the given parameters.
     /// Returns a mutable reference to the new `Room`.
-    pub fn create(&mut self, host_id: u64, is_public: bool, metadata: String) -> &mut Room {
-        let room_id = self.next_id;
+    pub fn create(&mut self, host_id: ClientId, is_public: bool, metadata: String) -> &mut Room {
+        let room_id = RoomId::new(self.next_id);
         self.next_id += 1;
 
         let join_code = self.join_codes.generate();
         let room = Room::new(room_id, join_code.clone(), host_id, is_public, metadata);
         self.jc_to_id.insert(join_code, room_id);
-        self.by_id.entry(room_id).or_insert(room)
+        self.by_id.insert(room_id, room);
+
+        // Safe to unwrap: we just inserted this key above.
+        self.by_id
+            .get_mut(&room_id)
+            .unwrap_or_else(|| unreachable!("room was just inserted under id {room_id}"))
     }
 
     /// Gets an iterator for all `Room`'s stored.
@@ -139,12 +145,12 @@ impl Rooms {
     }
 
     /// Gets a reference to a room by an ID
-    pub fn get(&self, id: u64) -> Option<&Room> {
+    pub fn get(&self, id: RoomId) -> Option<&Room> {
         self.by_id.get(&id)
     }
 
     /// Gets a mutable reference to a room by an ID
-    pub fn get_mut(&mut self, id: u64) -> Option<&mut Room> {
+    pub fn get_mut(&mut self, id: RoomId) -> Option<&mut Room> {
         self.by_id.get_mut(&id)
     }
 
@@ -155,16 +161,9 @@ impl Rooms {
         self.by_id.get(id)
     }
 
-    /// Gets a mutable reference to a room by a join code.
-    /// Prefer `get_mut` whenever possible as this requires 2 lookups.
-    pub fn get_by_jc_mut(&mut self, jc: &str) -> Option<&mut Room> {
-        let id = self.jc_to_id.get(jc)?;
-        self.by_id.get_mut(id)
-    }
-
     /// Removes a room under an ID.
     /// Also frees the join code from the generator.
-    pub fn remove(&mut self, id: u64) -> Option<Room> {
+    pub fn remove(&mut self, id: RoomId) -> Option<Room> {
         let r = self.by_id.remove(&id)?;
         self.jc_to_id.remove(&r.join_code);
         self.join_codes.free(&r.join_code);
